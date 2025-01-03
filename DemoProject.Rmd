@@ -1,0 +1,44 @@
+---
+title: "Malaria cases vs rainfall in Loreto Peru"
+output: html_document
+---
+
+## Malaria cases vs rainfall in Loreto Peru
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(here)
+library(lubridate)
+```
+
+## Import and wrangle data
+The raw malaria case data come as one record for each case, tagged by vector, administrative unit and epidemiological week. We will aggregate the data to weekly counts of cases in each administrative unit. Additionally, we will limit our analysis to one vector: P. falciparum.
+
+```{r malaria data import and wrangle}
+#Import all the data
+malaria_data_all <- read.csv(
+  file=here("data", "raw", "datos_abiertos_vigilancia_malaria.csv"),
+  stringsAsFactors = TRUE
+  ) 
+
+#Review
+str(malaria_data_all)
+
+#Create a date from the year and week number
+malaria_data <- malaria_data_all %>%
+  mutate(
+    date = as.Date(paste0(ano, "-01-01")) + weeks(semana - 1),
+    month = month(date)
+    ) %>%
+  #Filter for P. falciparum
+  filter(enfermedad == "MALARIA P. FALCIPARUM") %>%
+  #Group by date and administrative unit and count cases
+  group_by(month,ano, provincia) %>%
+  summarise(cases = n()) %>% 
+  #Pivot to wide format on provincia
+  pivot_wider(
+    names_from = provincia, 
+    values_from = cases, 
+    values_fill = 0) 
+
+```
