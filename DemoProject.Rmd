@@ -9,6 +9,8 @@ output: html_document
 library(tidyverse)
 library(here)
 library(lubridate)
+
+theme_set(theme_minimal())
 ```
 
 ## Import and wrangle data
@@ -16,29 +18,157 @@ The raw malaria case data come as one record for each case, tagged by vector, ad
 
 ```{r malaria data import and wrangle}
 #Import all the data
-malaria_data_all <- read.csv(
+malaria_data <- read.csv(
   file=here("data", "raw", "datos_abiertos_vigilancia_malaria.csv"),
-  stringsAsFactors = TRUE
-  ) 
+  stringsAsFactors = TRUE,
+  colClasses = c('ubigeo'='factor')
+  ) %>%
+  #Filter out records with missing location
+  filter(ubigeo != '999999')  %>% 
+  #Create a column of the first 4 characters of ubigeo
+  mutate(ubigeo_4 = substr(ubigeo, 1, 4))
 
-#Review
-str(malaria_data_all)
+## Create a lookup table for the administrative units
+admin_units <- malaria_data %>%
+  group_by(provincia, ubigeo_4) %>%
+  summarise() 
 
-#Create a date from the year and week number
-malaria_data <- malaria_data_all %>%
+## Wrangle the malaria data
+malaria_data <- malaria_data %>%
+  
+  #Create a date from the year and week number
   mutate(
-    date = as.Date(paste0(ano, "-01-01")) + weeks(semana - 1),
+    date = ymd(paste0(ano, "-01-01")) + weeks(semana - 1),
     month = month(date)
     ) %>%
+  
   #Filter for P. falciparum
   filter(enfermedad == "MALARIA P. FALCIPARUM") %>%
+  
   #Group by date and administrative unit and count cases
-  group_by(month,ano, provincia) %>%
+  group_by(month, ano, ubigeo_4) %>%
   summarise(cases = n()) %>% 
+  
   #Pivot to wide format on provincia
   pivot_wider(
-    names_from = provincia, 
+    names_from = ubigeo_4, 
     values_from = cases, 
-    values_fill = 0) 
+    values_fill = 0) %>% 
+  
+  #Re-add date column
+  mutate(date = ymd(paste(ano, month, "01")))
+
+## Add missing dates (months)
+#Create a data frame with all the dates
+all_dates <- data.frame(
+  date = seq.Date(
+    min(malaria_data$date), 
+    max(malaria_data$date), 
+    by = "month")
+  )
+
+#Join the data frame with the data
+malaria_data <- left_join(all_dates, malaria_data,by='date') %>% 
+  #Update missing date components
+  mutate(
+    ano = year(date),
+    month = month(date),
+  ) %>% 
+  #Fill missing cases with 0
+  replace(is.na(.), 0) %>%
+  #Pivot longer
+  pivot_longer(
+    cols = -c(date, month, ano),
+    names_to = "ubigeo_4",
+    values_to = "cases"
+    ) %>%
+  #Join with admin_units
+  left_join(admin_units, by = "ubigeo_4") %>% 
+  #Rename ano column to year
+  rename(year = ano)
+
+#Clean up
+remove (all_dates)
 
 ```
+
+### Visualizations of malaria data
+```{r malaria visualizations}
+#Set the province
+the_province = 'LORETO'
+
+#Filter records for the province
+plot_data <- malaria_data %>%
+  filter(provincia == the_province)
+
+#Line plot of monthly cases
+plot_data %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line() +
+  labs(
+    title = paste("Malaria cases by month:",the_province),
+    x = "Date",
+    y = "Cases"
+    ) 
+
+#Boxplots by month
+plot_data %>%
+  ggplot(aes(x = factor(month,labels=month.abb), y = cases)) +
+  geom_boxplot() +
+  labs(
+    title = paste("Malaria cases by month:",the_province),
+    x = "Month",
+    y = "Cases"
+    ) 
+
+#Find peaks in case rates
+plot_data %>%
+  ggplot(aes(x = date, y = cases)) +
+  geom_line() +
+  geom_smooth() +
+  labs(
+    title = paste("Malaria cases by month:",the_province),
+    x = "Date",
+    y = "Cases"
+    ) 
+
+```
+
+## Rainfall data
+The rainfall data come as one record for each day, tagged by station. We will aggregate the data to weekly sums of rainfall in each station.
+
+```{r rainfall data import and wrangle}
+#Read in the rainfall data
+rainfall_data <- read.csv(
+  file=here("data", "raw", "PERU_LDAS.csv"),
+  stringsAsFactors = TRUE,
+  colClasses = c('ubigeo'='factor')
+  ) %>% 
+  
+  #Subset columns for speed
+  select(ubigeo:Rainfall.mm.) %>%
+  
+  #Update/create columns
+  mutate(
+    #Convert EpiweekStartDate to date
+    EpiweekStartDate = ymd(EpiweekStartDate),
+    #Create a month column
+    month = month(EpiweekStartDate),
+    #Create a ubigeo_4 column
+    ubigeo_4 = substr(ubigeo, 1, 4)
+    ) %>%
+  #Compute monthly averages
+  group_by(ubigeo_4, year, month) %>% 
+  summarise(rainfall = mean(Rainfall.mm.)) 
+
+#Join the rainfall to the malaria data
+joined_data <- left_join(
+  malaria_data, 
+  rainfall_data, 
+  by = c("ubigeo_4", "year", "month")
+  ) %>% 
+  #Filter for records after 2000
+  filter(year > 2000) 
+  
+```
+
